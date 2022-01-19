@@ -22,7 +22,7 @@ maintainer:         majoros.balazs@protonmail.com
 extra-source-files: CHANGELOG.md
 
 library
-    exposed-modules:  Parser
+    exposed-modules:  Parser, Eval, Types
 
     -- Modules included in this library but not exported.
     -- other-modules:

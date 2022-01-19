@@ -1,8 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveAnyClass #-}
 
 module Parser where
 import Text.Megaparsec
@@ -18,71 +13,19 @@ import Control.Monad.IO.Class
 import Data.List
 import Types
 import Eval
--- data SExpression a = Atom a | List [SExpression a]
-
-
-
---evalExpr' :: Env -> Expr -> EvalM Value
---evalExpr' env (Var var) = evalVar' var
---evalExpr' env (Sum s) = return $ foldl (add) (NumberAtom 0) . map (\x -> evalExpr' x) $ s
-
---add :: Env ->  EvalM Value -> EvalM Value -> Either String Value
---add env x y = do
---        x' <- runExceptT $ evalStateT x env
---        y' <- runExceptT $ evalStateT y env
---        return $ _ + _
-
-
---evalExpr'
---evalExpr' = do
---        env' <- y
---        case env' of 
---          Left s -> print s
---          Right p -> do
---                res <- z env'
---                case res of 
---                  Left s -> print s
---                  Right p -> print p
---        where
---            x = [("asd",NumberAtom 2)]
---            y = runExceptT $ execStateT (evalDefineVar ("asad",NumberAtom 3)) x
---            z = runExceptT $ evalStateT (evalVar' "asad") 
---
---evalExpr'' s = do 
---        x <- runExceptT $ evalStateT (evalDefineVar s >> evalVar' s') []
---        case x of 
---          Left s -> print s 
---          Right s -> print s
---        
---        where (s', v) = s
-        
---evalSubtr :: Expr -> EvalM Value
---evalSubtr (Sum []) = 0
---evalSubtr (Sum xs) = undefined
-
---evalProduct :: Expr -> Value
---evalProduct (Product [x]) = NumberAtom x 
---evalProduct (Product xs)  = NumberAtom $ foldl (*) 1 xs
-
-
-                
-
--- TODO
---parseString :: Parser Expr
---parseString = StringAtom <$> string (many (C.alphaNumChar <|> C.spaceChar))
---parseString = String' <$> string (many (C.alphaNumChar <|> C.spaceChar))
 
 parseExpr :: Parser Expr
 parseExpr = choice [ 
                      parseInt,
                      parseBool,
                      parseOp,
+                     parseCall,
                      parseList,
                      parseVar
                    ]
 
 parseInt :: Parser Expr
-parseInt = NumLit . NumberAtom <$> lexeme ( L.signed spaceConsumer L.decimal)     
+parseInt = NumLit . NumberAtom <$> lexeme (L.decimal)     
 
 parseBool :: Parser Expr
 parseBool = BoolLit . BoolAtom <$> (lexeme . try) (parseStr' >>= bool)
@@ -123,7 +66,7 @@ parseList = try . parens $ do
 
 parseVar :: Parser Expr
 parseVar = do
-        var <- lexeme $ (:) <$> C.letterChar <*> many C.alphaNumChar
+        var <- identify
         return $ Var var
 
 assignVar :: Parser Statement
@@ -157,6 +100,9 @@ symbol = L.symbol spaceConsumer
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
+parensSquare :: Parser a -> Parser a
+parensSquare = between (symbol "[") (symbol "]")
+
 string :: Parser a -> Parser a
 string = between (symbol "\"") (symbol "\"")
 
@@ -164,7 +110,7 @@ reserved :: [String]
 reserved = ["defun", "set", "defvar", "if", "true", "false", "print"]
 
 parseStatement :: Parser Statement
-parseStatement = choice [parsePrint, parseAssign, parseIf, parseExprStatement]
+parseStatement = choice [parsePrint, parseAssign, parseIf, parseLet, parseDefun, parseWhile,  parseExprStatement ]
 -- order matters
 
 parseProgram :: Parser [Statement]
@@ -174,9 +120,6 @@ parseExprStatement :: Parser Statement
 parseExprStatement = Expression <$> parseExpr
 
 --TODO
-parseWhile :: Parser Statement
-parseWhile = undefined
-
 parsePrint :: Parser Statement
 parsePrint = try . parens $ do
         symbol "print"
@@ -190,36 +133,74 @@ parseAssign = try . parens $ do
         expr <- parseExpr
         return $ Assign var expr
 
+parseLet :: Parser Statement
+parseLet = try . parens $ do
+        symbol "let"
+        localVars <- many parseAssign
+        statement <- parseStatement
+        return $ Let localVars statement
+
+parseWhile :: Parser Statement
+parseWhile = try . parens $ do
+        symbol "while"
+        pred <- parseExpr
+        body <- many parseStatement
+        return $ While pred body
+
 parseIf :: Parser Statement
 parseIf = try . parens $ do
         symbol "if"
         pred <- parseExpr
-        statementTrue <- parseStatement
+        statementTrue  <- parseStatement
         statementFalse <- parseStatement
         return $ If pred statementTrue statementFalse
 
+parseDefun :: Parser Statement
+parseDefun = try. parens $ do 
+        symbol "defun"
+        name <- identify
+        args <- parensSquare $ many identify
+        body <- many parseStatement
+        return $ DeFunc name args body
 
+parseCall :: Parser Expr
+parseCall = try . parens $ do
+        name <- identify 
+        args <- many parseExpr
+        return $ Call name args
+          
+
+         
+        
 testProgram' :: String
 testProgram' = unlines [ 
-                         "(set i (+ 1 2))\n",
-                         "(set j (+ 2 3))\n",
-                         "(if (< i j) (print true) (print false))\n" 
+                     --    "(set i (+ 1 2))\n",
+                     --    "(set j (+ 2 3))\n",
+                     --    "(if (< i j) (print true) (print false))\n",
+                     --    "(let (set i 22)\n (set j 33)\n (print j))\n",
+                         "(defun fib [i]\n (if (= i 1) 0 \n (if (= i 2) 1 \n 3 ))) (print (fib 0))"
+                        --if (= i 1) (0)\n (if (= i 2) (1) \n (+ (fib (- n 1)) (fib (- n 2)))))"
                        ]
 
 testProgramSum :: String
 testProgramSum = "(print (! 2 (+ true 3) 3))"
 
+testProgFib :: String
+testProgFib = " (defun fib [n]\n (if (= n 1) 0 \n (if (= n 2) 1 \n (+ (fib (- n 1)) (fib (- n 2)))))) (print (fib 1))"
 
-runProgram = case parse parseProgram "" testProgramSum of
-               Left e  -> print e
+test = "(defun f [i] (if (= i 0) 1 (if (= i 1) 2  (- i 1))))"
+
+--[DeFunc "fib" ["i"] 
+--[If (EQ [Var "i",NumLit 1]) (Expression (NumLit 0)) (If (EQ [Var "i",NumLit 2]) (Expression (NumLit 1)) (Expression (NumLit 3)))],Print (Expression (Call "fib" [NumLit 0]))]
+
+t' = parseTest parseProgram test
+runProgram = do
+        source <- readFile "source.lisp"
+        case parse parseProgram "" source of
+               Left e  -> putStr (errorBundlePretty e)
                Right ast -> do 
                        comp <- runExceptT $ evalStateT (evalProgram ast) []
                        case comp of 
                               Left e -> print e
                               Right a -> print a
-
-
-
-
-
 

@@ -1,8 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveAnyClass #-}
 
 module Eval where
 import Text.Megaparsec
@@ -16,72 +11,12 @@ import Control.Monad.Except
 import Control.Monad.Identity
 import Control.Monad.IO.Class
 import Data.List
+import Debug.Trace
 import Types
 
-evalExpr :: Expr -> Value
-evalExpr (BoolLit v) = v 
-evalExpr (NumLit v) = v 
-evalExpr s@(Sum _) = evalSum s
-evalExpr s@(Subtr _) = evalSubtr s
-evalExpr p@(Product _) = evalProduct p
-
-
--- (+ 2 3 4) = 9
---
-
-evalSum :: Expr -> Value
-evalSum (Sum []) = NumberAtom 0
-evalSum (Sum x)  = foldl (+) (NumberAtom 0) . map (\x -> evalSExprNum x) $ x
-
-evalSExprNum :: Expr -> Value
-evalSExprNum x = case evalExpr x of
-                   n@(NumberAtom x) -> n
-                   _ -> error "Expression is not a number"
-
-evalSubtr :: Expr -> Value
-evalSubtr (Subtr []) = NumberAtom 0
-evalSubtr (Subtr x)  = foldl (-) (NumberAtom 0) . map (\x -> evalExpr x) $ x
-
-evalProduct :: Expr -> Value
-evalProduct (Product []) = NumberAtom 1
-evalProduct (Product x)  = foldl (*) (NumberAtom 1) . map (\x -> evalExpr x) $ x
-
-evalEq :: Expr -> Value
-evalEq (Types.EQ [])     = error "Too few arguments"
-evalEq (Types.EQ [x])    = BoolAtom True
-evalEq (Types.EQ [x,xx]) = BoolAtom $ (evalExpr x) == (evalExpr xx)
-evalEq (Types.EQ _)      = NIL
-
-evalLT :: Expr -> Value
-evalLT (Types.EQ [])       = error "Too few arguments"
-evalLT (Types.EQ [x])      = BoolAtom True
-evalLT (Types.EQ [x,xx])   = BoolAtom $ (evalExpr x)< (evalExpr xx)
-evalLT (Types.EQ _)        = NIL
 
 unpackBoolAtom :: Value -> Bool
 unpackBoolAtom (BoolAtom b) = b
-
-evalDivision :: Expr -> Value
-evalDivision (Division []) = NumberAtom 1
---evalDivision (Divison x) =  foldl (\) (NumberAtom 1) . map (\x -> evalExpr x) $ x
--- TODO check eval expr 
-
-declareVar :: Env -> String -> Expr -> Env
-declareVar env vname expr = (vname ,evalExpr expr) : env
-
-evalVar :: Env -> String -> Value
-evalVar env vname = case lookup vname env of
-                      Just (v) -> v
-                      Nothing -> error $ "Variable: " ++ vname ++ " is not declared"
-
-evalCheckNum x = undefined
-
-evalMExpr :: Env -> Expr -> EvalM Value
-evalMExpr env expr = execStateT (return $ env) (evalSum expr)
-
---evalSum' :: Expr -> String
---evalSum' (Sum []) = show $ NumberAtom 0
---evalSum' (Sum x)  = show $ foldl (+) (NumberAtom 0) . map (\x -> evalSExprNum x) $ x
 
 evalVar' :: Expr -> EvalM Value
 evalVar' (Var variable) = do
@@ -104,31 +39,60 @@ evalBool' e = do
           v@(BoolAtom n) -> return v
           _              -> throwError "Not a boolean"
 
-evalFunc :: Expr -> EvalM Value
-evalFunc (Function n args body argsnum ) = do
+evalFunc :: Value -> EvalM Value
+evalFunc (Function n vars args body argsnum ) = do
         if gotArgs /= argsnum 
            then
               throwError errmsg
-        else undefined 
+        else do env <- get
+                exprList <- mapM (evalExpr') args
+                let vars' = zip vars exprList
+                put (vars' ++ env)
+                val <- execBody body
+                put env
+                return val
                  where
                    errmsg = "Function " ++ n ++ " expects " ++ (show argsnum) ++ " arguments, but got: " ++ show gotArgs
                    gotArgs = length args
 
-execBody :: [Expr] -> [Expr] -> EvalM Value
-execBody args body = do
+evalCall :: Expr -> EvalM Value 
+evalCall (Call name args) = do 
         env <- get
-        undefined       
+        case lookup name env of
+          Just (Function name vars _ body n) -> evalFunc (Function name vars args body n )
+          Just e  -> throwError $ "expected function but got: " ++ show e
+          Nothing -> throwError $ "Undefined function " ++ name 
+evalCall e = throwError $ "expected function but got: " ++ show e
+                
+
+
+defineFunction :: Statement -> EvalM Value
+defineFunction (DeFunc name args body) = do
+        env <- get  
+        let func = Function name args [] body (length args)
+        put $ (name, func) : env
+        return $ func
+
+execBody :: [Statement] -> EvalM Value
+execBody body = do
+        env <- get
+        mapM_ evalStatement (init body)
+        evalStatement $ last body
         
 fromValueToBool :: Value -> Bool
 fromValueToBool (BoolAtom b) = b
 
 evalExpr' :: Expr -> EvalM Value
-evalExpr' (NumLit n) = return n
-evalExpr' (BoolLit n) = return n
-evalExpr' s@(Sum n) = evalSum' s
-evalExpr' p@(Product n) = evalProd' p
-evalExpr' v@(Var n) = evalVar' v
+evalExpr' (NumLit n)      = return n
+evalExpr' (BoolLit n)     = return n
+evalExpr' s@(Sum n)       = evalSum' s
+evalExpr' s@(Subtr n)     = evalSub' s
+evalExpr' s@(Types.EQ n)  = evalEq' s
+evalExpr' p@(Product n)   = evalProd' p
+evalExpr' v@(Var n)       = evalVar' v
 evalExpr' l@(Types.LT n)  = evalLt' l
+evalExpr' c@(Call n a)    = evalCall c
+evalExpr' x               = throwError $ "Expected expression, but got:  " ++ show x
           
 
 testexpr :: Expr
@@ -149,10 +113,10 @@ evalSub' (Subtr [])  = return $ NIL
 evalSub' (Subtr [a]) = evalExpr' a
 evalSub' (Subtr a)   = do 
         let a' = map (\n -> evalNum' n) a
-        foldl (\x y -> do
+        foldr (\x y -> do
                 x' <- x
                 y' <- y
-                return $ x' - y') (return $ NumberAtom 0) a'
+                return $ (-) x' y') (return $ NumberAtom 0) a'
 
 
 evalProd' :: Expr -> EvalM Value
@@ -191,72 +155,77 @@ evalLteq' (Types.LTEQ [a,b])   = do
       b' <- evalExpr' b
       return $ BoolAtom (a' <= b')
 evalLteq' (Types.LTEQ _)       = return $ NIL
---evalDiv' :: Expr -> EvalM Value
---evalDiv' (Division [])   = return $ NIL
---evalDiv' (Division [a])  = evalExpr' a
---evalDiv' (Division (a:as)) = do 
---        let as' = map (\n -> evalNum' n) as
---        foldl (\x y -> do
---                x' <- x
---                y' <- y
---                return $ x' `div` y') (evalExpr' a) as'
-        
---evalDefineVar :: Expr -> EvalM Value
---evalDefineVar e = do
---        env <- get
---        case e of 
---          a@(Assign name value) -> do 
---                  value' <- evalExpr' value
---                  let var = (name, value')
---                  case lookup name env of
---                     Just a -> do
---                             put $ var : (deleteBy (\(x,y) (x',y') -> x == x' ) var env)
---                             return NIL
---                     Nothing -> do 
---                             put $ var : env
---                             return NIL
---
---          _                     -> throwError "Not an assignment"
 
-
-evalStatement :: Statement -> EvalM ()
+evalStatement :: Statement -> EvalM Value
 evalStatement (Expression e) = do 
-        evalExpr' e
-        return ()
-evalStatement (Seq s s') =  evalStatement s >> evalStatement s'
+        e <- evalExpr' e
+        return e
 evalStatement (If e s s') = do
-        e' <- evalBool' e -- BoolAtom False
+        e' <- evalBool' e 
         let pred = unpackBoolAtom e'
         if pred then evalStatement s else evalStatement s'
-evalStatement (Assign name value) =  do
-        env <- get
-        value' <- evalExpr' value
-        let var = (name, value')
-        case lookup name env of
-           Just a -> put $ var : (deleteBy (\(x,y) (x',y') -> x == x' ) var env)
-           Nothing -> put $ var : env
-
+evalStatement a@(Assign name value) = evalAssign a
 evalStatement (Print s) = do
         case s of 
           (Expression e) -> do
                   val <- evalExpr' e
                   liftIO $ print val
+                  return NIL
+          anything -> do 
+                  val <- evalStatement anything 
+                  liftIO $ print val
+                  return NIL
           _              -> throwError $  "Can't print statement: " ++ show s
+evalStatement w@(While cond body) = do
+        pred <- evalBool' cond
+        let pred' = unpackBoolAtom pred
+        if pred' then do
+                body' <- mapM_ evalStatement body
+                evalStatement w
+                else return NIL
+evalStatement l@(Let _ _) = evalLet l 
+evalStatement d@(DeFunc _ _ _ ) = defineFunction d
 
-        
---  (set i 2)
---  (set j (+ 2 i))
---  (print 2)
---  (print j)
+
+evalAssign :: Statement -> EvalM Value
+evalAssign (Assign name value) = do
+        env <- get
+        value' <- evalExpr' value
+        let var = (name, value')
+        case lookup name env of
+           Just a -> do 
+                   put $ var : (deleteBy (\(x,y) (x',y') -> x == x' ) var env)
+                   return NIL
+           Nothing -> do put $ var : env
+                         return NIL
+evalAssign _ = throwError "Expected assignment"
+
+
+evalLet :: Statement -> EvalM Value
+evalLet (Let vars rest) = do
+        env <- get
+        mapM_ evalAssign vars
+        evalStatement rest 
+        put env
+        return NIL
+
+evalFunction :: Statement -> EvalM ()
+evalFunction = undefined
 
 testStatement :: [Statement]
 testStatement = 
         [
          Assign "i" (NumLit (NumberAtom 2)),
          Assign "j" (Sum [NumLit (NumberAtom 2), Var "i"]),
-         Print (Expression (NumLit (NumberAtom 2))),
-         Print (Expression (Var "j"))
+         DeFunc ("print-i-j") ["c","k"] [(Print (Expression (Var "i"))), Assign "i" (NumLit (NumberAtom 100)), (Print (Expression (NumLit (NumberAtom 55))))],
+         Print (Expression (Call "print-i-j" [NumLit (NumberAtom 2),(Var "j")])),
+         Print (Expression (Var "i"))
         ]
+
+testFunc :: Statement 
+testFunc = DeFunc ("print-i-j") ["i","j"] [(Print (Expression (Var "i"))), (Print (Expression (Var "j"))) ]
+testLet :: Statement 
+testLet = Let [Assign "i" (NumLit (NumberAtom 66))] (Print (Expression (Var "i")))
 
 testProgram1 :: [Statement]
 testProgram1 = 
@@ -269,3 +238,4 @@ testProgram1 =
 
 evalProgram :: [Statement] -> EvalM ()
 evalProgram prog = mapM_ evalStatement prog
+

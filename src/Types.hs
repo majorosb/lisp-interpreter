@@ -1,8 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveAnyClass #-}
 
 module Types where
 
@@ -16,23 +11,27 @@ import Control.Monad.IO.Class
 
 type Parser = Parsec Void String
 
-data Value = NumberAtom Int | BoolAtom Bool | NIL
+data Value = NumberAtom Int 
+           | BoolAtom Bool
+           | NIL
+           |  Function { 
+                     name :: String,
+                     vars :: [String],
+                     args :: [Expr],
+                     body :: [Statement],
+                     numArgs :: Int
+                       }
         deriving (Eq, Ord)
 
 data Expr = BoolLit Value
         | NumLit Value 
         | Var String
         | List [Expr]
+        | Call String [Expr]
         | Sum [Expr]
         | Subtr [Expr]
         | Product [Expr]
         | Division [Expr]
-        | Function { 
-                     name :: String,
-                     args :: [Expr],
-                     body :: [Expr],
-                     numArgs :: Int
-                   }
         | EQ [Expr]
         | LT [Expr]
         | LTEQ [Expr]
@@ -40,10 +39,12 @@ data Expr = BoolLit Value
 
 data Statement = Skip 
                | Expression Expr 
-               | Seq Statement Statement 
                | If Expr Statement Statement
                | Assign String Expr
                | Print Statement
+               | Let [Statement] Statement
+               | DeFunc String [String] [Statement]
+               | While Expr [Statement]
                deriving (Eq, Ord, Show)
 
 
@@ -55,14 +56,13 @@ instance Num Value where
         abs (NumberAtom a)                = NumberAtom $ abs a
         signum (NumberAtom a)             = NumberAtom $ signum a
         fromInteger a                     = NumberAtom $ fromInteger a
+
 instance Show Value where
         show (NumberAtom a) = show a
         show (BoolAtom a)   = show a
         show (NIL)          = "Nil"
 
 type Env   = [(String, Value)]
--- (s -> m (a, s)) -> StateT s (m (Either e a) -> ExceptT e m a) a
--- 
 type EvalM = StateT Env (ExceptT String IO) 
 
 instance Num Expr where
