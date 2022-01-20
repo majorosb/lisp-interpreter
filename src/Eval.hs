@@ -209,8 +209,6 @@ evalLet (Let vars rest) = do
         put env
         return NIL
 
-evalFunction :: Statement -> EvalM ()
-evalFunction = undefined
 
 testStatement :: [Statement]
 testStatement = 
